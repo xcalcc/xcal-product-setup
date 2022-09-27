@@ -1,0 +1,474 @@
+version: "3.4"
+
+services:
+  redis:
+    image: xcal.redis:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    command: redis-server --appendonly yes
+    ports:
+      - ${REDIS_TCP_PORT}:6379
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    volumes:
+      - redisdata:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  jaeger-agent:
+    image: xcal.jaeger-agent:IMAGE_VERSION
+    hostname: jaeger-agent
+    ports:
+      - "${JAEGER_AGENT_UDP_PORT1}:5775/udp"
+      - "${JAEGER_AGENT_UDP_PORT2}:6831/udp"
+      - "${JAEGER_AGENT_UDP_PORT3}:6832/udp"
+      - "${JAEGER_AGENT_TCP_PORT}:5778"
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    environment:
+      - SPAN_STORAGE_TYPE=
+    command: ["--collector.host-port=${MONITOR_SERVER_IP:-127.0.0.1}:14267"]
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  file-service:
+    image: xcal.file-service:IMAGE_VERSION
+    hostname: file-service
+    ports:
+      - "${FILE_SERVICE_TCP_PORT}:9000"
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    command: minio server /data
+    environment:
+      - MINIO_ACCESS_KEY=${FILE_SERVICE_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${FILE_SERVICE_SECRET_KEY}
+    volumes:
+      - INSTALL_PREFIX/data/volume/upload:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  database:
+    image: xcal.database:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      endpoint_mode: dnsrr
+    environment:
+      - POSTGRES_DB=xcalibyte
+      - POSTGRES_USER=xcalibyte
+      - POSTGRES_PASSWORD=${XCAL_DB_PASSWORD}
+    ports:
+      # - ${DATABASE_TCP_PORT}:5432
+      - target: 5432
+        published: ${DATABASE_TCP_PORT}
+        protocol: tcp
+        mode: host
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    volumes:
+      - INSTALL_PREFIX/data/volume/pgdata:/var/lib/postgresql/data
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  main:
+    image: xcal.main-service:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    environment:
+      - API_VERSION=PRODUCT_VERSION
+      - MAIL_FROM=no-reply@xcalibyte.io   # workaround
+      - POSTGRES_DB=xcalibyte
+      - POSTGRES_SCHEMA=xcalibyte
+      - POSTGRES_USER=xcalibyte
+      - POSTGRES_PASSWORD=${XCAL_DB_PASSWORD}
+      - POSTGRES_HOST=database
+      - POSTGRES_PORT=5432
+      - WEB_SERVER_PORT=80
+      - PREPARE_SCAN=false
+      - JAEGER_HOST=jaeger-agent
+      - JAEGER_PORT=6831
+      - PERFORMANCE_PROMETHEUS_QUERY_URL=http://${MONITOR_SERVER_IP:-127.0.0.1}:${MONITOR_PROMETHEUS_PORT:-9090}
+      - JAEGER_SERVICE_NAME=web-api-service-main-PRODUCT_VERSION
+      - MULTIPART_MAX_FILE_SIZE=1000MB
+      - MULTIPART_MAX_REQUEST_SIZE=1000MB
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - LOGSTASH_HOST=logstash
+      - LOGSTASH_PORT=5000
+      - LOG_LEVEL
+      - ISSUE_PAGE_URL
+      - APIGATEWAY_TCP_PORT
+      - MYBATIS_LOG_LEVEL=INFO
+      - EXECUTION_MODE=RELEASE
+      - JAVA_OPTS=
+        -XX:MaxRAMPercentage=50
+        -XshowSettings:vm
+        -XX:+UseContainerSupport
+      
+    ports:
+      - ${JAVA_MAIN_TCP_PORT}:80
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    healthcheck:
+      test: curl -sS http://127.0.0.1 || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    volumes:
+      - INSTALL_PREFIX/data/volume/scandata:/share/scan
+      - INSTALL_PREFIX/data/volume/upload:/share/upload
+      - INSTALL_PREFIX/data/volume/tmp:/share/tmp
+      - INSTALL_PREFIX/data/volume/diagnostic:/share/diagnostic
+      - INSTALL_PREFIX/data/volume/logs:/ws/xcal/app/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  kafka:
+    image: xcal.kafka:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    environment:
+      - KAFKA_ADVERTISED_HOST_NAME=kafka
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - ZOOKEEPER_IP=zookeeper
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+      - KAFKA_LOG_DIRS=/kafka/kafka-logs
+      - KAFKA_CREATE_TOPICS=job-scan-engine-runner:3:1
+    volumes:
+      - INSTALL_PREFIX/data/volume/kafka:/kafka
+      - INSTALL_PREFIX/data/volume/kafka-data:/var/lib/kafka/data
+    ports:
+      - ${KAFKA_TCP_PORT}:9092
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  zookeeper:
+    image: xcal.zookeeper:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    #volumes:
+    ports:
+      - ${ZOOKEEPER_TCP_PORT}:2181
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  verify-service:
+    image: xcal.pro-verify:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    volumes:
+      - INSTALL_PREFIX/data/volume/scandata:/share/scan
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  relay-service:
+    image: xcal.pro-relay:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    volumes:
+      - INSTALL_PREFIX/data/volume/scandata:/share/scan
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  scan:
+    image: xcal.scan-service:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    environment:
+#      - PYTHONPATH=/ws/xcal/app/scan/scanTaskService/commondef/src:/ws/xcal/app/scan:${PYTHONPATH}
+#      - JAEGER_AGENT_HOST=jaeger-agent
+      - SCANNER_WORKER_COUNT=${SCANNER_WORKER_COUNT:-3}
+      - PUSH_GATEWAY_URL=${MONITOR_SERVER_IP:-127.0.0.1}:9091
+      - SCAN_IMAGE=xcal.xvsa:IMAGE_VERSION
+      - SHARE_SCAN_VOLUME=INSTALL_PREFIX/data/volume/scandata:/share/scan
+      - SHARE_XVSA_VOLUME=INSTALL_PREFIX/data/volume/rules:/share/rules
+      - KAFKA_SERVER_HOST=kafka
+      - DOCKER_NETWORK=xcal_wsnet_NETWORK_SUFFIX
+      - SCAN_SERVICE_LOG_PATH=/ws/xcal/app/logs/xcalscan.run.log
+      - MAX_FILE_SIZE=1073741824
+      - SCAN_COMMAND=start.sh
+      - FILE_SERVICE_URL=${ISSUE_PAGE_URL:-http://127.0.0.1}:${FILE_SERVICE_TCP_PORT:-9000}
+      - MINIO_ACCESS_KEY=${FILE_SERVICE_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${FILE_SERVICE_SECRET_KEY}
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    healthcheck:
+      test: python3 scanTaskService/health_check.py || exit 1
+      interval: 120s
+      timeout: 120s
+      retries: 5
+      start_period: 1s
+    depends_on:
+      - kafka
+    volumes:
+      - INSTALL_PREFIX/data/volume/logs:/ws/xcal/app/logs
+      - INSTALL_PREFIX/data/volume/scandata:/share/scan
+      - INSTALL_PREFIX/data/volume/rules:/share/rules
+      - INSTALL_PREFIX/data/volume/upload:/share/upload
+      - /var/run/docker.sock:/var/run/docker.sock
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  api:
+    image: xcal.apigateway:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - ${APIGATEWAY_TCP_PORT}:80
+    environment:
+      - MONITOR_SERVER_IP=${MONITOR_SERVER_IP:-127.0.0.1}
+      - MONITOR_JAEGER_COLLECTOR_TCP_PORT4
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    volumes:
+      - INSTALL_PREFIX/data/volume/scandata:/share/scan
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  webpage:
+    image: xcal.webfrontend:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  rule-service:
+    image: xcal.rule-service:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - ${RULESERVICE_TCP_PORT}:3003
+    healthcheck:
+      test: curl -sS http://127.0.0.1:3003 || exit 1 
+      interval: 60s
+      timeout: 20s
+      retries: 5
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    volumes:
+      - INSTALL_PREFIX/data/volume/customrules:/customrules
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  notification-service:
+    image: xcal.notification-service:IMAGE_VERSION
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+    ports:
+      - ${NOTIFICATIONSERVICE_TCP_PORT}:4004
+    healthcheck:
+      test: curl -sS http://127.0.0.1:4004 || exit 1 
+      interval: 60s
+      timeout: 20s
+      retries: 5
+    networks:
+      - xcal_wsnet_NETWORK_SUFFIX
+    volumes:
+      - INSTALL_PREFIX/data/volume/scandata:/data
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "2"
+        max-size: "100m"
+
+  # kafka:
+  #   image: xcal.kafka:IMAGE_VERSION
+  #   deploy:
+  #     replicas: 1
+  #     restart_policy:
+  #       condition: on-failure
+  #   environment:
+  #     - KAFKA_ADVERTISED_HOST_NAME=kafka
+  #     - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+  #     - ZOOKEEPER_IP=zookeeper
+  #   #volumes:
+  #   ports:
+  #     - ${KAFKA_TCP_PORT}:9092
+  #   networks:
+  #     - xcal_wsnet_NETWORK_SUFFIX
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-file: "2"
+  #       max-size: "100m"
+
+#   elasticsearch:
+#     image: xcal.elasticsearch:IMAGE_VERSION
+#     ports:
+#       - ${ELASTIC_TCP_PORT1}:9200
+#       - ${ELASTIC_TCP_PORT2}:9300
+#     configs:
+#       - source: elastic_config
+#         target: /usr/share/elasticsearch/config/elasticsearch.yml
+#     environment:
+#       ES_JAVA_OPTS: "-Xmx256m -Xms256m"
+#       ELASTIC_PASSWORD: xc5elk
+#       # Use single node discovery in order to disable production mode and avoid bootstrap checks.
+#       # see: https://www.elastic.co/guide/en/elasticsearch/reference/current/bootstrap-checks.html
+#       discovery.type: single-node
+#       # Force publishing on the 'elk' overlay.
+#       network.publish_host: _eth0_
+#     networks:
+#       - xcal_wsnet_NETWORK_SUFFIX
+#     deploy:
+#       mode: replicated
+#       replicas: 1
+#       restart_policy:
+#         condition: on-failure
+#     logging:
+#       driver: "json-file"
+#       options:
+#         max-file: "2"
+#         max-size: "100m"
+
+#   logstash:
+#     image: xcal.logstash:IMAGE_VERSION
+#     ports:
+#       - ${LOGSTASH_TCP_PORT1}:5000
+#       - ${LOGSTASH_TCP_PORT2}:5044
+#       - ${LOGSTASH_TCP_PORT3}:9600
+#     configs:
+#       - source: logstash_config
+#         target: /usr/share/logstash/config/logstash.yml
+#       - source: logstash_pipeline
+#         target: /usr/share/logstash/pipeline/logstash.conf
+#     environment:
+#       LS_JAVA_OPTS: "-Xmx256m -Xms256m"
+#     networks:
+#       - xcal_wsnet_NETWORK_SUFFIX
+#     deploy:
+#       mode: replicated
+#       replicas: 1
+#       restart_policy:
+#         condition: on-failure
+#     logging:
+#       driver: "json-file"
+#       options:
+#         max-file: "2"
+#         max-size: "100m"
+
+#   kibana:
+#     image: xcal.kibana:IMAGE_VERSION
+#     ports:
+#       - ${KIBANA_TCP_PORT}:5601
+#     configs:
+#       - source: kibana_config
+#         target: /usr/share/kibana/config/kibana.yml
+#     networks:
+#       - xcal_wsnet_NETWORK_SUFFIX
+#     deploy:
+#       mode: replicated
+#       replicas: 1
+#       restart_policy:
+#         condition: on-failure
+#     logging:
+#       driver: "json-file"
+#       options:
+#         max-file: "2"
+#         max-size: "100m"
+
+# configs:
+#   elastic_config:
+#     file: ./elasticsearch.yml
+#   logstash_config:
+#     file: ./logstash.yml
+#   logstash_pipeline:
+#     file: ./logstash.conf
+#   kibana_config:
+#     file: ./kibana.yml
+
+
+volumes:
+  esdata:
+    driver: local
+  redisdata:
+    driver: local
+
+networks:
+  xcal_wsnet_NETWORK_SUFFIX:
+    external: true
