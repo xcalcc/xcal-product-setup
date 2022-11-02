@@ -8,8 +8,6 @@ init_and_checking(){
   new_version=2.1.4
   old_installation_folder_path=~/xcalibyte-xcalscan-2.1.3-installer
   new_installation_folder_path=~/xcalibyte-xcalscan-2.1.4-installer
-  
-
 
   old_version_hyphen="$(echo $old_version | tr "." "-")"
 
@@ -39,10 +37,8 @@ pre_install(){
   ./xcalscan-service.sh stop
   sudo docker ps
 
-  old_db_volume_path=`sudo docker volume inspect --format '{{ .Mountpoint }}'  "xcalscan-"$old_version_hyphen"_pgdata"`
-  sudo cp -rfp $old_db_volume_path $old_installation_folder_path/xcalibyte/xcalscan/$old_version/data/volume/pgdata
-
-  
+  # old_db_volume_path=`sudo docker volume inspect --format '{{ .Mountpoint }}'  "xcalscan-"$old_version_hyphen"_pgdata"`
+  # sudo cp -rfp $old_db_volume_path $old_installation_folder_path/xcalibyte/xcalscan/$old_version/data/volume/pgdata
 
 }
 
@@ -77,24 +73,48 @@ post_install(){
       fi
   done
   
-  #Init variable after all service ready
-  new_db_id=`sudo docker ps -qf "name=^xcalscan-"$new_version"_database"`
-  
-  # add columns, insert detault data and update constraint
-  # TODO: remove when not require after specific version
-  #sudo docker exec $new_db_id sh -c 'echo "alter table \"user\" add column config_num_code_display INT NULL DEFAULT 10000;"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "alter table \"project\" add column retention_num INT NULL;"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "alter table \"issue_group\" add column scan_task_id UUID NULL;"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "alter table \"issue\" add column scan_task_id UUID NULL;"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "update issue_group set scan_task_id = occur_scan_task_id;"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "update issue set scan_task_id = (select scan_task_id from issue_group where id = issue.issue_group_id);"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "alter table issue_group drop constraint issue_group_pkey cascade;"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "alter table issue_group add constraint issue_group_pkey PRIMARY KEY (scan_task_id,id);"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "alter table issue_group add constraint issue_group_scan_task_id_fkey FOREIGN KEY (scan_task_id) REFERENCES xcalibyte.scan_task(id) ON DELETE SET null;"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "CREATE INDEX IF NOT EXISTS idx_issue_group_scan_task ON xcalibyte.issue_group USING btree (scan_task_id);"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "alter table issue drop constraint issue_issue_group_id_fkey cascade;"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id sh -c 'echo "alter table issue add constraint issue_issue_group_id_fkey FOREIGN KEY (scan_task_id,issue_group_id) REFERENCES xcalibyte.issue_group(scan_task_id,id) ON DELETE cascade;"|psql -d xcalibyte xcalibyte'
-  sudo docker exec $new_db_id psql -U xcalibyte -a xcalibyte -c "insert into setting (setting_key, setting_value, modified_by) VALUES ('retention_num', '5', 'system') on conflict do nothing;"
+    
+  if [ "$old_version" != "$new_version" ]; then
+    #Init variable after all service ready
+    new_db_id=`sudo docker ps -qf "name=^xcalscan-"$new_version"_database"`
+    
+    # add columns, insert detault data and update constraint
+    # TODO: remove when not require after specific version
+    #sudo docker exec $new_db_id sh -c 'echo "alter table \"user\" add column config_num_code_display INT NULL DEFAULT 10000;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id psql -U xcalibyte -a xcalibyte -c "insert into setting (setting_key, setting_value, modified_by) VALUES ('retention_num', '5', 'system') on conflict do nothing;"
+    sudo docker exec $new_db_id sh -c 'echo "alter table \"project\" add column retention_num INT NULL;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "alter table \"issue_group\" add column scan_task_id UUID NULL;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "alter table \"issue\" add column scan_task_id UUID NULL;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "update issue_group set scan_task_id = occur_scan_task_id;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "update issue set scan_task_id = (select scan_task_id from issue_group where id = issue.issue_group_id);"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "alter table issue_group drop constraint issue_group_pkey cascade;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "alter table issue_group add constraint issue_group_pkey PRIMARY KEY (scan_task_id,id);"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "alter table issue_group drop constraint issue_group_scan_task_id_fkey cascade;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "alter table issue_group add constraint issue_group_scan_task_id_fkey FOREIGN KEY (scan_task_id) REFERENCES xcalibyte.scan_task(id) ON DELETE SET null;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "CREATE INDEX IF NOT EXISTS idx_issue_group_scan_task ON xcalibyte.issue_group USING btree (scan_task_id);"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "alter table issue drop constraint issue_issue_group_id_fkey cascade;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id sh -c 'echo "alter table issue add constraint issue_issue_group_id_fkey FOREIGN KEY (scan_task_id,issue_group_id) REFERENCES xcalibyte.issue_group(scan_task_id,id) ON DELETE cascade;"|psql -d xcalibyte xcalibyte'
+    sudo docker exec $new_db_id psql -U xcalibyte -a xcalibyte -c "CREATE TABLE IF NOT EXISTS xcalibyte.issue_validation  (
+      id uuid NOT NULL DEFAULT uuid_generate_v4(),
+      project_id uuid NULL,
+      scan_task_id uuid NULL,
+      rule_code text NULL,
+      file_path text NULL,
+      function_name text NULL,
+      variable_name text NULL,
+      line_number int NULL,
+      type text NULL,
+      action text NULL,
+      scope text NULL,
+      created_by text,
+      created_on timestamp default CURRENT_TIMESTAMP,
+      modified_by text,
+      modified_on timestamp default CURRENT_TIMESTAMP,
+      CONSTRAINT issue_management_pkey PRIMARY KEY (id),
+      CONSTRAINT issue_management_project_id_fkey FOREIGN KEY (project_id) REFERENCES xcalibyte.project(id) ON DELETE CASCADE
+    );
+    "
+  fi
 
   #create topic and set to 3 partition
   ret=1
@@ -114,10 +134,6 @@ post_install(){
   else
     echo "topic partitions has set to 3 already"
   fi
-
-  #[docker-host]restart new server
-  cd $new_installation_folder_path
-  ./xcalscan-service.sh restart
 }
 #[docker-host]verify new server
 
